@@ -13,7 +13,6 @@ from habitat.utils.gym_definitions import make_gym_from_config
 if TYPE_CHECKING:
     from omegaconf import DictConfig
 
-
 def construct_envs(
     config: "DictConfig",
     workers_ignore_signals: bool = False,
