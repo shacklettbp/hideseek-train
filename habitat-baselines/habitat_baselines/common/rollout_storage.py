@@ -6,6 +6,7 @@
 
 import warnings
 from typing import Any, Dict, Iterator, Optional, Tuple
+import gym.spaces as spaces
 
 import numpy as np
 import torch

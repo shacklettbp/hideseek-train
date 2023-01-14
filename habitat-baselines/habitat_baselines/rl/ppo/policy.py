@@ -23,6 +23,7 @@ from habitat_baselines.rl.models.simple_cnn import SimpleCNN
 from habitat_baselines.utils.common import (
     CategoricalNet,
     GaussianNet,
+    MultiCategoricalNet,
     get_num_actions,
 )
 
@@ -81,7 +82,6 @@ class NetPolicy(nn.Module, Policy):
     ):
         super().__init__()
         self.net = net
-        self.dim_actions = get_num_actions(action_space)
         self.action_distribution: Union[CategoricalNet, GaussianNet]
 
         if policy_config is None:
@@ -93,12 +93,16 @@ class NetPolicy(nn.Module, Policy):
 
         if self.action_distribution_type == "categorical":
             self.action_distribution = CategoricalNet(
-                self.net.output_size, self.dim_actions
+                self.net.output_size, get_num_actions(action_space)
+            )
+        elif self.action_distribution_type == "multi_categorical":
+            self.action_distribution = MultiCategoricalNet(
+                self.net.output_size, action_space.nvec
             )
         elif self.action_distribution_type == "gaussian":
             self.action_distribution = GaussianNet(
                 self.net.output_size,
-                self.dim_actions,
+                get_num_actions(action_space),
                 policy_config.action_dist,
             )
         else:
@@ -147,7 +151,10 @@ class NetPolicy(nn.Module, Policy):
         value = self.critic(features)
 
         if deterministic:
-            if self.action_distribution_type == "categorical":
+            if self.action_distribution_type in [
+                "categorical",
+                "multi_categorical",
+            ]:
                 action = distribution.mode()
             elif self.action_distribution_type == "gaussian":
                 action = distribution.mean

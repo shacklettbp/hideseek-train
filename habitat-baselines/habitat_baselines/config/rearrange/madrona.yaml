@@ -7,6 +7,7 @@ defaults:
 
 habitat_baselines:
   verbose: False
+  dry_run: False
   trainer_name: "ddppo"
   torch_gpu_id: 0
   tensorboard_dir: "tb"
@@ -14,11 +15,11 @@ habitat_baselines:
   video_fps: 30
   test_episode_count: -1
   eval_ckpt_path_dir: "data/new_checkpoints"
-  num_environments: 32
+  num_environments: 4920
   writer_type: 'tb'
   checkpoint_folder: "data/new_checkpoints"
   num_updates: -1
-  total_num_steps: 1.0e8
+  total_num_steps: 1.0e9
   log_interval: 10
   num_checkpoints: 20
   # Force PyTorch to be single threaded as
@@ -32,7 +33,7 @@ habitat_baselines:
   rl:
     policy:
       name: "PointNavResNetPolicy"
-      action_distribution_type: "gaussian"
+      action_distribution_type: "multi_categorical"
       action_dist:
        use_log_std: True
     ppo:

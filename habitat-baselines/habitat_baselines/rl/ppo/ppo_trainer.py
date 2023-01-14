@@ -18,7 +18,7 @@ from gym import spaces
 from omegaconf import OmegaConf
 from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
-from habitat_baselines.common.madrona import construct_envs
+from habitat_baselines.common.madrona import construct_envs, batch_obs
 
 from habitat import VectorEnv, logger
 from habitat.config import read_write
@@ -31,7 +31,8 @@ from habitat.utils.render_wrapper import overlay_frame
 from habitat.utils.visualizations.utils import observations_to_image
 from habitat_baselines.common.base_trainer import BaseRLTrainer
 from habitat_baselines.common.baseline_registry import baseline_registry
-#from habitat_baselines.common.construct_vector_env import construct_envs
+
+# from habitat_baselines.common.construct_vector_env import construct_envs
 from habitat_baselines.common.obs_transformers import (
     apply_obs_transforms_batch,
     apply_obs_transforms_obs_space,
@@ -63,7 +64,7 @@ from habitat_baselines.rl.hrl.hierarchical_policy import (  # noqa: F401.
 from habitat_baselines.rl.ppo import PPO
 from habitat_baselines.rl.ppo.policy import NetPolicy
 from habitat_baselines.utils.common import (
-    batch_obs,
+    # batch_obs,
     generate_video,
     get_num_actions,
     inference_mode,
@@ -281,6 +282,9 @@ class PPOTrainer(BaseRLTrainer):
             # Assume ALL actions are NOT discrete
             action_shape = (get_num_actions(action_space),)
             discrete_actions = False
+        elif isinstance(action_space, spaces.MultiDiscrete):
+            action_shape = action_space.shape
+            discrete_actions = True
         else:
             # For discrete pointnav
             action_shape = (1,)
@@ -488,19 +492,27 @@ class PPOTrainer(BaseRLTrainer):
 
         t_step_env = time.time()
 
-        for index_env, act in zip(
-            range(env_slice.start, env_slice.stop), actions.cpu().unbind(0)
-        ):
-            if is_continuous_action_space(self.policy_action_space):
-                # Clipping actions to the specified limits
-                act = np.clip(
-                    act.numpy(),
-                    self.policy_action_space.low,
-                    self.policy_action_space.high,
-                )
-            else:
-                act = act.item()
-            self.envs.async_step_at(index_env, act)
+        # for index_env, act in zip(
+        #     range(env_slice.start, env_slice.stop), actions.cpu().unbind(0)
+        # ):
+        #     if is_continuous_action_space(self.policy_action_space):
+        #         # Clipping actions to the specified limits
+        #         act = np.clip(
+        #             act.numpy(),
+        #             self.policy_action_space.low,
+        #             self.policy_action_space.high,
+        #         )
+        #     else:
+        #         act = act.item()
+        #     self.envs.async_step_at(index_env, act)
+        if is_continuous_action_space(self.policy_action_space):
+            # Clipping actions to the specified limits
+            actions = np.clip(
+                actions.numpy(),
+                self.policy_action_space.low,
+                self.policy_action_space.high,
+            )
+        self.envs.step(actions)
 
         self.env_time += time.time() - t_step_env
 
@@ -520,14 +532,15 @@ class PPOTrainer(BaseRLTrainer):
         )
 
         t_step_env = time.time()
-        outputs = [
-            self.envs.wait_step_at(index_env)
-            for index_env in range(env_slice.start, env_slice.stop)
-        ]
+        # outputs = [
+        #     self.envs.wait_step_at(index_env)
+        #     for index_env in range(env_slice.start, env_slice.stop)
+        # ]
 
-        observations, rewards_l, dones, infos = [
-            list(x) for x in zip(*outputs)
-        ]
+        # observations, rewards_l, dones, infos = [
+        #     list(x) for x in zip(*outputs)
+        # ]
+        observations, rewards, done_masks, infos = self.envs.wait_step()
 
         self.env_time += time.time() - t_step_env
 
@@ -535,19 +548,19 @@ class PPOTrainer(BaseRLTrainer):
         batch = batch_obs(observations, device=self.device)
         batch = apply_obs_transforms_batch(batch, self.obs_transforms)  # type: ignore
 
-        rewards = torch.tensor(
-            rewards_l,
-            dtype=torch.float,
-            device=self.current_episode_reward.device,
-        )
-        rewards = rewards.unsqueeze(1)
+        # rewards = torch.tensor(
+        #     rewards_l,
+        #     dtype=torch.float,
+        #     device=self.current_episode_reward.device,
+        # )
+        # rewards = rewards.unsqueeze(1)
 
-        not_done_masks = torch.tensor(
-            [[not done] for done in dones],
-            dtype=torch.bool,
-            device=self.current_episode_reward.device,
-        )
-        done_masks = torch.logical_not(not_done_masks)
+        # not_done_masks = torch.tensor(
+        #     [[not done] for done in dones],
+        #     dtype=torch.bool,
+        #     device=self.current_episode_reward.device,
+        # )
+        not_done_masks = torch.logical_not(done_masks)
 
         self.current_episode_reward[env_slice] += rewards
         current_ep_reward = self.current_episode_reward[env_slice]
@@ -968,6 +981,9 @@ class PPOTrainer(BaseRLTrainer):
             # Assume NONE of the actions are discrete
             action_shape = (get_num_actions(action_space),)
             discrete_actions = False
+        elif isinstance(action_space, spaces.MultiDiscrete):
+            action_shape = action_space.shape
+            discrete_actions = True
         else:
             # For discrete pointnav
             action_shape = (1,)

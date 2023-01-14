@@ -60,6 +60,8 @@ class PointNavResNetPolicy(NetPolicy):
         if policy_config is not None:
             discrete_actions = (
                 policy_config.action_distribution_type == "categorical"
+                or policy_config.action_distribution_type
+                == "multi_categorical"
             )
             self.action_distribution_type = (
                 policy_config.action_distribution_type
@@ -257,20 +259,20 @@ class PointNavResNetNet(Net):
         discrete_actions: bool = True,
     ):
         super().__init__()
-        self.prev_action_embedding: nn.Module
+        # self.prev_action_embedding: nn.Module
         self.discrete_actions = discrete_actions
         self._n_prev_action = 32
-        if discrete_actions:
-            self.prev_action_embedding = nn.Embedding(
-                action_space.n + 1, self._n_prev_action
-            )
-        else:
-            num_actions = get_num_actions(action_space)
-            self.prev_action_embedding = nn.Linear(
-                num_actions, self._n_prev_action
-            )
+        # if discrete_actions:
+        #     self.prev_action_embedding = nn.Embedding(
+        #         action_space.n + 1, self._n_prev_action
+        #     )
+        # else:
+        #     num_actions = get_num_actions(action_space)
+        #     self.prev_action_embedding = nn.Linear(
+        #         num_actions, self._n_prev_action
+        #     )
         self._n_prev_action = 32
-        rnn_input_size = self._n_prev_action  # test
+        rnn_input_size = 0
 
         # Only fuse the 1D state inputs. Other inputs are processed by the
         # visual encoder
@@ -566,21 +568,22 @@ class PointNavResNetNet(Net):
                 goal_visual_fc = getattr(self, f"{uuid}_fc")
                 x.append(goal_visual_fc(goal_visual_output))
 
-        if self.discrete_actions:
-            prev_actions = prev_actions.squeeze(-1)
-            start_token = torch.zeros_like(prev_actions)
-            # The mask means the previous action will be zero, an extra dummy action
-            prev_actions = self.prev_action_embedding(
-                torch.where(masks.view(-1), prev_actions + 1, start_token)
-            )
-        else:
-            prev_actions = self.prev_action_embedding(
-                masks * prev_actions.float()
-            )
+        # if self.discrete_actions:
+        #     prev_actions = prev_actions.squeeze(-1)
+        #     start_token = torch.zeros_like(prev_actions)
+        #     # The mask means the previous action will be zero, an extra dummy action
+        #     prev_actions = self.prev_action_embedding(
+        #         torch.where(masks.view(-1), prev_actions + 1, start_token)
+        #     )
+        # else:
+        #     prev_actions = self.prev_action_embedding(
+        #         masks * prev_actions.float()
+        #     )
 
-        x.append(prev_actions)
+        # x.append(prev_actions)
 
         out = torch.cat(x, dim=1)
+
         out, rnn_hidden_states = self.state_encoder(
             out, rnn_hidden_states, masks, rnn_build_seq_info
         )

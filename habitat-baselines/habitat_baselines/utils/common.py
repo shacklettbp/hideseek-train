@@ -84,6 +84,31 @@ class CustomFixedCategorical(torch.distributions.Categorical):  # type: ignore
         return super().entropy().unsqueeze(-1)
 
 
+class MultiCustomFixedCategorical:
+    def __init__(self, all_logits):
+        self._dists = [
+            CustomFixedCategorical(logits=x.float(), validate_args=False)
+            for x in all_logits
+        ]
+
+    def sample(
+        self, sample_shape: Size = torch.Size()  # noqa: B008
+    ) -> Tensor:
+        return torch.cat([x.sample(sample_shape) for x in self._dists], dim=-1)
+
+    def log_probs(self, actions: Tensor) -> Tensor:
+        return torch.stack(
+            [x.log_probs(actions[:, i]) for i, x in enumerate(self._dists)],
+            dim=-1,
+        ).sum(-1)
+
+    def mode(self):
+        return torch.cat([x.mode() for x in self._dists], dim=-1)
+
+    def entropy(self):
+        return torch.stack([x.entropy() for x in self._dists], dim=-1).sum()
+
+
 class CategoricalNet(nn.Module):
     def __init__(self, num_inputs: int, num_outputs: int) -> None:
         super().__init__()
@@ -96,6 +121,23 @@ class CategoricalNet(nn.Module):
     def forward(self, x: Tensor) -> CustomFixedCategorical:
         x = self.linear(x)
         return CustomFixedCategorical(logits=x.float(), validate_args=False)
+
+
+class MultiCategoricalNet(nn.Module):
+    def __init__(self, num_inputs: int, action_shape: Tuple[int]) -> None:
+        super().__init__()
+
+        self.linears = nn.ModuleList(
+            [nn.Linear(num_inputs, ac_out) for ac_out in action_shape]
+        )
+
+        for linear in self.linears:
+            nn.init.orthogonal_(linear.weight, gain=0.01)
+            nn.init.constant_(linear.bias, 0)
+
+    def forward(self, x: Tensor) -> CustomFixedCategorical:
+        all_x = [linear(x) for linear in self.linears]
+        return MultiCustomFixedCategorical(all_x)
 
 
 class CustomNormal(torch.distributions.normal.Normal):
