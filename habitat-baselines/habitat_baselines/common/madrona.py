@@ -19,6 +19,9 @@ class MadronaVectorEnv:
             self._reset = torch.zeros((self._num_envs, 3), device="cuda")
             self._reward = torch.zeros((self._num_envs, 6, 1), device="cuda")
             self._done = torch.zeros((self._num_envs, 1), device="cuda")
+            self._agent_type = torch.zeros(
+                (self._num_envs, 6, 1), device="cuda"
+            )
 
             # Observations
             self._box_data = torch.zeros(
@@ -45,6 +48,10 @@ class MadronaVectorEnv:
             self._ramp_vis = torch.zeros(
                 (self._num_envs, 6, 2, 1), device="cuda"
             )
+            self._rgb = torch.zeros(
+                (self._num_envs, 6, 64, 64, 4), device="cuda"
+            )
+
         else:
             self._sim = gpu_hideseek_python.HideAndSeekSimulator(
                 exec_mode=gpu_hideseek_python.ExecMode.CUDA,
@@ -57,9 +64,11 @@ class MadronaVectorEnv:
                 debug_compile=False,
             )
             self._action = self._sim.action_tensor().to_torch()
+            self._rgb = self._sim.rgb_tensor().to_torch()
             self._reset = self._sim.reset_tensor().to_torch()
             self._reward = self._sim.reward_tensor().to_torch()
             self._done = self._sim.done_tensor().to_torch()
+            self._agent_type = self._sim.agent_type_tensor().to_torch()
 
             # Observations
             self._box_data = self._sim.box_data_tensor().to_torch()
@@ -74,6 +83,10 @@ class MadronaVectorEnv:
             )
             self._box_vis = self._sim.visible_boxes_mask_tensor().to_torch()
             self._ramp_vis = self._sim.visible_ramps_mask_tensor().to_torch()
+
+        self._start_ramp_pos = None
+        self._start_box_pos = None
+        self._start_agent_pos = None
 
         self._obs_shape = tuple(self._get_obs_no_cp().shape)[1:]
 
@@ -104,6 +117,12 @@ class MadronaVectorEnv:
             )
         ]
 
+    def _get_ramp_pos(self):
+        return self._ramp_data[:, 0, :, :2]
+
+    def _get_box_pos(self):
+        return self._box_data[:, 0, :, :2]
+
     @property
     def orig_action_spaces(self):
         return self.action_spaces
@@ -115,10 +134,13 @@ class MadronaVectorEnv:
             self._ramp_vis * self._ramp_data,
         ]
         dat = [x.view(self._num_envs, self._max_num_agents, -1) for x in dat]
-        dat.append(
-            self._prep_count.view(self._num_envs, 1, 1).repeat(
-                1, self._max_num_agents, 1
-            )
+        dat.extend(
+            [
+                self._prep_count.view(self._num_envs, 1, 1).repeat(
+                    1, self._max_num_agents, 1
+                ),
+                self._agent_type,
+            ]
         )
         obs = torch.cat(dat, dim=-1)
         # Add agent to the batch dim
@@ -133,9 +155,24 @@ class MadronaVectorEnv:
     def reset(self):
         # Reset all envs
         self._reset[:, 0] = 1
-        self._reset[:, 1:2] = self._max_num_agents // 2
+        # Set the number of hiders
+        self._reset[:, 1] = self._max_num_agents // 2
+        # Set the number of seekers
+        self._reset[:, 2] = self._max_num_agents // 2
         self._internal_step()
+
+        self._start_box_pos = self._get_box_pos()
+        self._start_ramp_pos = self._get_ramp_pos()
         return self._get_obs()
+
+    def _update_start_pos(self):
+        is_reset = self._reset[:, 0].view(-1, 1, 1)
+        self._start_box_pos = ((1.0 - is_reset) * self._start_box_pos) + (
+            is_reset * self._get_box_pos()
+        )
+        self._start_ramp_pos = ((1.0 - is_reset) * self._start_ramp_pos) + (
+            is_reset * self._get_ramp_pos()
+        )
 
     def _internal_step(self):
         if self._sim is not None:
@@ -152,11 +189,12 @@ class MadronaVectorEnv:
         action = action.view(self._num_envs, self._max_num_agents, -1)
         self._action.copy_(action)
 
-        # [0-10] -> [-5, 5] for the agent movement.
+        # [0-10] -> [-5, 5] for the agent movement (translation and roation).
         for i in [0, 1, 2]:
             self._action[:, i] -= 5
 
         self._reset[:, :1] = self._done
+        breakpoint()
         done = (
             self._done.clone()
             .view(-1, 1, 1)
@@ -165,13 +203,34 @@ class MadronaVectorEnv:
             .cpu()
             .bool()
         )
+        self._update_start_pos()
         self._internal_step()
         obs = self._get_obs()
-        reward = self._agent_batch(self._reward.clone()).cpu()
-        info = [{} for _ in range(self._num_envs)]
+        reward = self._reward.clone()
+
+        ramp_dist = torch.linalg.norm(
+            self._get_ramp_pos() - self._start_ramp_pos, dim=-1
+        ).mean(-1)
+        box_dist = torch.linalg.norm(
+            self._get_box_pos() - self._start_box_pos, dim=-1
+        ).mean(-1)
+
+        info = [
+            {
+                "r_t": reward[env_i, agent_i].item(),
+                "ramp_dist": ramp_dist[env_i].item(),
+                "box_dist": box_dist[env_i].item(),
+            }
+            for env_i in range(self._num_envs)
+            for agent_i in range(self._max_num_agents)
+        ]
+        reward = self._agent_batch(reward).cpu()
 
         self._last = (obs, reward, done, info)
         return self._last
+
+    def render(self):
+        return self._rgb
 
 
 def construct_envs(

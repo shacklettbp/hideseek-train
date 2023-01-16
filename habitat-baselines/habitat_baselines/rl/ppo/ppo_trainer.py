@@ -1038,30 +1038,29 @@ class PPOTrainer(BaseRLTrainer):
         evals_per_ep = self.config.habitat_baselines.eval.evals_per_ep
         if number_of_eval_episodes == -1:
             number_of_eval_episodes = sum(self.envs.number_of_episodes)
-        else:
-            total_num_eps = sum(self.envs.number_of_episodes)
-            # if total_num_eps is negative, it means the number of evaluation episodes is unknown
-            if total_num_eps < number_of_eval_episodes and total_num_eps > 1:
-                logger.warn(
-                    f"Config specified {number_of_eval_episodes} eval episodes"
-                    ", dataset only has {total_num_eps}."
-                )
-                logger.warn(f"Evaluating with {total_num_eps} instead.")
-                number_of_eval_episodes = total_num_eps
-            else:
-                assert evals_per_ep == 1
+        # else:
+        #     total_num_eps = sum(self.envs.number_of_episodes)
+        #     # if total_num_eps is negative, it means the number of evaluation episodes is unknown
+        #     if total_num_eps < number_of_eval_episodes and total_num_eps > 1:
+        #         logger.warn(
+        #             f"Config specified {number_of_eval_episodes} eval episodes"
+        #             ", dataset only has {total_num_eps}."
+        #         )
+        #         logger.warn(f"Evaluating with {total_num_eps} instead.")
+        #         number_of_eval_episodes = total_num_eps
+        #     else:
+        #         assert evals_per_ep == 1
         assert (
             number_of_eval_episodes > 0
         ), "You must specify a number of evaluation episodes with test_episode_count"
 
         pbar = tqdm.tqdm(total=number_of_eval_episodes * evals_per_ep)
         self.actor_critic.eval()
+        ep_count = 0
         while (
             len(stats_episodes) < (number_of_eval_episodes * evals_per_ep)
             and self.envs.num_envs > 0
         ):
-            current_episodes_info = self.envs.current_episodes()
-
             with inference_mode():
                 (
                     _,
@@ -1082,7 +1081,7 @@ class PPOTrainer(BaseRLTrainer):
             # in the subprocesses.
             if is_continuous_action_space(self.policy_action_space):
                 # Clipping actions to the specified limits
-                step_data = [
+                actions = [
                     np.clip(
                         a.numpy(),
                         self.policy_action_space.low,
@@ -1090,14 +1089,12 @@ class PPOTrainer(BaseRLTrainer):
                     )
                     for a in actions.cpu()
                 ]
-            else:
-                step_data = [a.item() for a in actions.cpu()]
+            # else:
+            #     step_data = [a.item() for a in actions.cpu()]
 
-            outputs = self.envs.step(step_data)
+            observations, rewards, dones, infos = self.envs.step(actions)
+            not_done_masks = ~dones
 
-            observations, rewards_l, dones, infos = [
-                list(x) for x in zip(*outputs)
-            ]
             policy_info = self.actor_critic.get_policy_info(infos, dones)
             for i in range(len(policy_info)):
                 infos[i].update(policy_info[i])
@@ -1107,110 +1104,55 @@ class PPOTrainer(BaseRLTrainer):
             )
             batch = apply_obs_transforms_batch(batch, self.obs_transforms)  # type: ignore
 
-            not_done_masks = torch.tensor(
-                [[not done] for done in dones],
-                dtype=torch.bool,
-                device="cpu",
-            )
-
-            rewards = torch.tensor(
-                rewards_l, dtype=torch.float, device="cpu"
-            ).unsqueeze(1)
             current_episode_reward += rewards
-            next_episodes_info = self.envs.current_episodes()
             envs_to_pause = []
             n_envs = self.envs.num_envs
-            for i in range(n_envs):
-                if (
-                    ep_eval_count[
-                        (
-                            next_episodes_info[i].scene_id,
-                            next_episodes_info[i].episode_id,
-                        )
-                    ]
-                    == evals_per_ep
-                ):
-                    envs_to_pause.append(i)
+            frames = self.envs.render()
+
+            if len(self.config.habitat_baselines.eval.video_option) > 0:
+                mult_factor = 1.0
+                if not not_done_masks[0].item():
+                    mult_factor = 0.0
+                # TODO move normalization / channel changing out of the policy and undo it here
+                frame = observations_to_image(
+                    {
+                        f"agent{agent_i}": frames[0, agent_i] * mult_factor
+                        for agent_i in range(6)
+                    },
+                    infos[0],
+                )
+                frame = overlay_frame(
+                    frame, self._extract_scalars_from_info(infos[0])
+                )
+                rgb_frames[0].append(frame)
+
+            # episode ended
+            if not not_done_masks[0].item():
+                pbar.update()
+                episode_stats = {"reward": current_episode_reward[0].item()}
+                episode_stats.update(self._extract_scalars_from_info(infos[0]))
+                ep_count += 1
+                k = str(ep_count)
+                current_episode_reward[0] = 0
+                ep_eval_count[k] += 1
+                # use scene_id + episode_id as unique id for storing stats
+                stats_episodes[(k, ep_eval_count[k])] = episode_stats
 
                 if len(self.config.habitat_baselines.eval.video_option) > 0:
-                    # TODO move normalization / channel changing out of the policy and undo it here
-                    frame = observations_to_image(
-                        {k: v[i] for k, v in batch.items()}, infos[i]
+                    generate_video(
+                        video_option=self.config.habitat_baselines.eval.video_option,
+                        video_dir=self.config.habitat_baselines.video_dir,
+                        images=rgb_frames[0],
+                        episode_id=ep_count,
+                        checkpoint_idx=checkpoint_index,
+                        metrics=self._extract_scalars_from_info(infos[0]),
+                        fps=self.config.habitat_baselines.video_fps,
+                        tb_writer=writer,
+                        keys_to_include_in_name=self.config.habitat_baselines.eval_keys_to_include_in_name,
                     )
-                    if not not_done_masks[i].item():
-                        # The last frame corresponds to the first frame of the next episode
-                        # but the info is correct. So we use a black frame
-                        frame = observations_to_image(
-                            {k: v[i] * 0.0 for k, v in batch.items()}, infos[i]
-                        )
-                    frame = overlay_frame(
-                        frame, self._extract_scalars_from_info(infos[i])
-                    )
-                    rgb_frames[i].append(frame)
 
-                # episode ended
-                if not not_done_masks[i].item():
-                    pbar.update()
-                    episode_stats = {
-                        "reward": current_episode_reward[i].item()
-                    }
-                    episode_stats.update(
-                        self._extract_scalars_from_info(infos[i])
-                    )
-                    current_episode_reward[i] = 0
-                    k = (
-                        current_episodes_info[i].scene_id,
-                        current_episodes_info[i].episode_id,
-                    )
-                    ep_eval_count[k] += 1
-                    # use scene_id + episode_id as unique id for storing stats
-                    stats_episodes[(k, ep_eval_count[k])] = episode_stats
-
-                    if (
-                        len(self.config.habitat_baselines.eval.video_option)
-                        > 0
-                    ):
-                        generate_video(
-                            video_option=self.config.habitat_baselines.eval.video_option,
-                            video_dir=self.config.habitat_baselines.video_dir,
-                            images=rgb_frames[i],
-                            episode_id=current_episodes_info[i].episode_id,
-                            checkpoint_idx=checkpoint_index,
-                            metrics=self._extract_scalars_from_info(infos[i]),
-                            fps=self.config.habitat_baselines.video_fps,
-                            tb_writer=writer,
-                            keys_to_include_in_name=self.config.habitat_baselines.eval_keys_to_include_in_name,
-                        )
-
-                        rgb_frames[i] = []
-
-                    gfx_str = infos[i].get(GfxReplayMeasure.cls_uuid, "")
-                    if gfx_str != "":
-                        write_gfx_replay(
-                            gfx_str,
-                            self.config.habitat.task,
-                            current_episodes_info[i].episode_id,
-                        )
-
+                    rgb_frames[0] = []
             not_done_masks = not_done_masks.to(device=self.device)
-            (
-                self.envs,
-                test_recurrent_hidden_states,
-                not_done_masks,
-                current_episode_reward,
-                prev_actions,
-                batch,
-                rgb_frames,
-            ) = self._pause_envs(
-                envs_to_pause,
-                self.envs,
-                test_recurrent_hidden_states,
-                not_done_masks,
-                current_episode_reward,
-                prev_actions,
-                batch,
-                rgb_frames,
-            )
 
         pbar.close()
         assert (
