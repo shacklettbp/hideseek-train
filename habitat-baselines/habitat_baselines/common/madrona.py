@@ -4,11 +4,13 @@ import gym.spaces as spaces
 import numpy as np
 import torch
 from habitat_baselines.common.tensor_dict import TensorDict
+from collections import defaultdict
 
 
 class MadronaVectorEnv:
     def __init__(self, config):
         self._config = config
+        self._debug_env = self._config.habitat_baselines.debug_env
         self._max_num_agents = 6
         self._num_envs = (
             config.habitat_baselines.num_environments // self._max_num_agents
@@ -53,6 +55,7 @@ class MadronaVectorEnv:
             )
 
         else:
+            print(f"Allocating {self._num_envs} environments")
             self._sim = gpu_hideseek_python.HideAndSeekSimulator(
                 exec_mode=gpu_hideseek_python.ExecMode.CUDA,
                 gpu_id=0,
@@ -87,6 +90,7 @@ class MadronaVectorEnv:
         self._start_ramp_pos = None
         self._start_box_pos = None
         self._start_agent_pos = None
+        self._actions_debug = defaultdict(list)
 
         self._obs_shape = tuple(self._get_obs_no_cp().shape)[1:]
 
@@ -139,7 +143,7 @@ class MadronaVectorEnv:
                 self._prep_count.view(self._num_envs, 1, 1).repeat(
                     1, self._max_num_agents, 1
                 ),
-                self._agent_type,
+                # self._agent_type,
             ]
         )
         obs = torch.cat(dat, dim=-1)
@@ -150,15 +154,30 @@ class MadronaVectorEnv:
         return X.view(self._num_envs * self._max_num_agents, -1)
 
     def _get_obs(self):
-        return TensorDict(hideseek_state=self._get_obs_no_cp().clone())
+        obs = self._get_obs_no_cp()
+        if self._debug_env and torch.isnan(obs).any():
+            # Observation returned nan
+            print(
+                "Bad envs",
+                [
+                    i
+                    for i in range(self._agent_data.shape[0])
+                    if torch.isnan(self._agent_data[i]).any()
+                ],
+            )
+            # Access action sequence from `self._actions_debug`.
+            breakpoint()
+        obs = torch.nan_to_num(obs)
+
+        return TensorDict(hideseek_state=obs.clone())
 
     def reset(self):
         # Reset all envs
         self._reset[:, 0] = 1
         # Set the number of hiders
-        self._reset[:, 1] = self._max_num_agents // 2
+        self._reset[:, 1] = 3
         # Set the number of seekers
-        self._reset[:, 2] = self._max_num_agents // 2
+        self._reset[:, 2] = 3
         self._internal_step()
 
         self._start_box_pos = self._get_box_pos()
@@ -194,7 +213,6 @@ class MadronaVectorEnv:
             self._action[:, i] -= 5
 
         self._reset[:, :1] = self._done
-        breakpoint()
         done = (
             self._done.clone()
             .view(-1, 1, 1)
@@ -204,6 +222,14 @@ class MadronaVectorEnv:
             .bool()
         )
         self._update_start_pos()
+
+        if self._debug_env:
+            # Save action sequences if in debug mode.
+            for env_i in range(self._num_envs):
+                self._actions_debug[env_i].append(self._action[env_i].cpu())
+            if done[env_i].item():
+                self._actions_debug[env_i] = []
+
         self._internal_step()
         obs = self._get_obs()
         reward = self._reward.clone()
