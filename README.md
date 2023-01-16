@@ -1,5 +1,5 @@
 # Installation
-* Install [GPU rearrange](https://github.com/shacklettbp/gpu_hideseek)](https://github.com/shacklettbp/gpu_hideseek).
+* Install [GPU rearrange](https://github.com/shacklettbp/gpu_hideseek).
 * Install Habitat-Sim
     * `git clone https://github.com/facebookresearch/habitat-sim.git`
     * `cd habitat-sim`
