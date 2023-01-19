@@ -143,7 +143,7 @@ class MadronaVectorEnv:
                 self._prep_count.view(self._num_envs, 1, 1).repeat(
                     1, self._max_num_agents, 1
                 ),
-                # self._agent_type,
+                self._agent_type,
             ]
         )
         obs = torch.cat(dat, dim=-1)

@@ -106,7 +106,7 @@ class MultiCustomFixedCategorical:
         return torch.cat([x.mode() for x in self._dists], dim=-1)
 
     def entropy(self):
-        return torch.stack([x.entropy() for x in self._dists], dim=-1).sum()
+        return torch.stack([x.entropy() for x in self._dists], dim=-1).sum(-1)
 
 
 class CategoricalNet(nn.Module):
