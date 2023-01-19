@@ -179,6 +179,7 @@ class MadronaVectorEnv:
         # Set the number of seekers
         self._reset[:, 2] = 3
         self._internal_step()
+        self._num_steps = torch.zeros((self._num_envs, 1), device="cuda")
 
         self._start_box_pos = self._get_box_pos()
         self._start_ramp_pos = self._get_ramp_pos()
@@ -213,6 +214,8 @@ class MadronaVectorEnv:
             self._action[:, i] -= 5
 
         self._reset[:, :1] = self._done
+        self._num_steps += 1.0
+        self._num_steps *= 1.0 - self._done
         done = (
             self._done.clone()
             .view(-1, 1, 1)
@@ -244,12 +247,15 @@ class MadronaVectorEnv:
         info = [
             {
                 "r_t": reward[env_i, agent_i].item(),
-                "ramp_dist": ramp_dist[env_i].item(),
-                "box_dist": box_dist[env_i].item(),
+                "ns": self._num_steps[env_i].item(),
+                "stage": self._prep_count[env_i].item(),
+                # "ramp_dist": ramp_dist[env_i].item(),
+                # "box_dist": box_dist[env_i].item(),
             }
             for env_i in range(self._num_envs)
             for agent_i in range(self._max_num_agents)
         ]
+
         reward = self._agent_batch(reward).cpu()
 
         self._last = (obs, reward, done, info)
