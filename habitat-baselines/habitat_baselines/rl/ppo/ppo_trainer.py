@@ -359,10 +359,10 @@ class PPOTrainer(BaseRLTrainer):
 
         self.rollouts.buffers["observations"][0] = batch  # type: ignore
 
-        self.current_episode_reward = torch.zeros(self.envs.num_envs, 1)
+        self.current_episode_reward = torch.zeros(self.envs.num_envs, 1, device='cuda')
         self.running_episode_stats = dict(
-            count=torch.zeros(self.envs.num_envs, 1),
-            reward=torch.zeros(self.envs.num_envs, 1),
+            count=torch.zeros(self.envs.num_envs, 1, device='cuda'),
+            reward=torch.zeros(self.envs.num_envs, 1, device='cuda'),
         )
         self.window_episode_stats = defaultdict(
             lambda: deque(maxlen=ppo_cfg.reward_window_size)
@@ -420,30 +420,31 @@ class PPOTrainer(BaseRLTrainer):
 
     @classmethod
     def _extract_scalars_from_info(
-        cls, info: Dict[str, Any]
+        cls, info: Dict[str, Any], env_i: int
     ) -> Dict[str, float]:
-        result = {}
-        for k, v in info.items():
-            if not isinstance(k, str) or k in NON_SCALAR_METRICS:
-                continue
+        return {k: v[env_i].item() for k,v in info.items()}
+        # result = {}
+        # for k, v in info.items():
+        #     if not isinstance(k, str) or k in NON_SCALAR_METRICS:
+        #         continue
 
-            if isinstance(v, dict):
-                result.update(
-                    {
-                        k + "." + subk: subv
-                        for subk, subv in cls._extract_scalars_from_info(
-                            v
-                        ).items()
-                        if isinstance(subk, str)
-                        and k + "." + subk not in NON_SCALAR_METRICS
-                    }
-                )
-            # Things that are scalar-like will have an np.size of 1.
-            # Strings also have an np.size of 1, so explicitly ban those
-            elif np.size(v) == 1 and not isinstance(v, str):
-                result[k] = float(v)
+        #     if isinstance(v, dict):
+        #         result.update(
+        #             {
+        #                 k + "." + subk: subv
+        #                 for subk, subv in cls._extract_scalars_from_info(
+        #                     v
+        #                 ).items()
+        #                 if isinstance(subk, str)
+        #                 and k + "." + subk not in NON_SCALAR_METRICS
+        #             }
+        #         )
+        #     # Things that are scalar-like will have an np.size of 1.
+        #     # Strings also have an np.size of 1, so explicitly ban those
+        #     elif np.size(v) == 1 and not isinstance(v, str):
+        #         result[k] = float(v)
 
-        return result
+        # return result
 
     @classmethod
     def _extract_scalars_from_infos(
@@ -564,19 +565,26 @@ class PPOTrainer(BaseRLTrainer):
 
         self.current_episode_reward[env_slice] += rewards
         current_ep_reward = self.current_episode_reward[env_slice]
+
         self.running_episode_stats["reward"][env_slice] += current_ep_reward.where(done_masks, current_ep_reward.new_zeros(()))  # type: ignore
         self.running_episode_stats["count"][env_slice] += done_masks.float()  # type: ignore
-        for k, v_k in self._extract_scalars_from_infos(infos).items():
-            v = torch.tensor(
-                v_k,
-                dtype=torch.float,
-                device=self.current_episode_reward.device,
-            ).unsqueeze(1)
+        for k, v in infos.items():
             if k not in self.running_episode_stats:
                 self.running_episode_stats[k] = torch.zeros_like(
-                    self.running_episode_stats["count"]
+                    self.running_episode_stats["count"], device='cuda'
                 )
             self.running_episode_stats[k][env_slice] += v.where(done_masks, v.new_zeros(()))  # type: ignore
+        # for k, v_k in self._extract_scalars_from_infos(infos).items():
+        #     v = torch.tensor(
+        #         v_k,
+        #         dtype=torch.float,
+        #         device=self.current_episode_reward.device,
+        #     ).unsqueeze(1)
+        #     if k not in self.running_episode_stats:
+        #         self.running_episode_stats[k] = torch.zeros_like(
+        #             self.running_episode_stats["count"]
+        #         )
+        #     self.running_episode_stats[k][env_slice] += v.where(done_masks, v.new_zeros(()))  # type: ignore
 
         self.current_episode_reward[env_slice].masked_fill_(done_masks, 0.0)
 
@@ -1000,7 +1008,7 @@ class PPOTrainer(BaseRLTrainer):
         batch = apply_obs_transforms_batch(batch, self.obs_transforms)  # type: ignore
 
         current_episode_reward = torch.zeros(
-            self.envs.num_envs, 1, device="cpu"
+            self.envs.num_envs, 1, device="cuda"
         )
 
         test_recurrent_hidden_states = torch.zeros(
@@ -1095,9 +1103,9 @@ class PPOTrainer(BaseRLTrainer):
             observations, rewards, dones, infos = self.envs.step(actions)
             not_done_masks = ~dones
 
-            policy_info = self.actor_critic.get_policy_info(infos, dones)
-            for i in range(len(policy_info)):
-                infos[i].update(policy_info[i])
+            # policy_info = self.actor_critic.get_policy_info(infos, dones)
+            # for i in range(len(policy_info)):
+            #     infos[i].update(policy_info[i])
             batch = batch_obs(  # type: ignore
                 observations,
                 device=self.device,
@@ -1119,18 +1127,19 @@ class PPOTrainer(BaseRLTrainer):
                         f"agent{agent_i}": frames[0, agent_i] * mult_factor
                         for agent_i in range(6)
                     },
-                    infos[0],
+                    {}
                 )
                 frame = overlay_frame(
-                    frame, self._extract_scalars_from_info(infos[0])
+                    frame, self._extract_scalars_from_info(infos, 0)
                 )
                 rgb_frames[0].append(frame)
 
             # episode ended
             if not not_done_masks[0].item():
+                assert not_done_masks.sum().item() == 0
                 pbar.update()
                 episode_stats = {"reward": current_episode_reward[0].item()}
-                episode_stats.update(self._extract_scalars_from_info(infos[0]))
+                episode_stats.update(self._extract_scalars_from_info(infos, 0))
                 ep_count += 1
                 k = str(ep_count)
                 current_episode_reward[0] = 0
@@ -1145,7 +1154,8 @@ class PPOTrainer(BaseRLTrainer):
                         images=rgb_frames[0],
                         episode_id=ep_count,
                         checkpoint_idx=checkpoint_index,
-                        metrics=self._extract_scalars_from_info(infos[0]),
+                        #metrics=self._extract_scalars_from_info(infos[0]),
+                        metrics={},
                         fps=self.config.habitat_baselines.video_fps,
                         tb_writer=writer,
                         keys_to_include_in_name=self.config.habitat_baselines.eval_keys_to_include_in_name,

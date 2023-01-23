@@ -1,4 +1,5 @@
 # @package _global_
+# ETU = Emergent Tool Use paper
 
 defaults:
   - /benchmark/rearrange: rearrange_easy
@@ -21,7 +22,7 @@ habitat_baselines:
   writer_type: 'tb'
   checkpoint_folder: "data/new_checkpoints"
   num_updates: -1
-  total_num_steps: 1.0e10
+  total_num_steps: 1.0e11
   log_interval: 1
   num_checkpoints: 100
   # Force PyTorch to be single threaded as
@@ -44,11 +45,11 @@ habitat_baselines:
       ppo_epoch: 2
       num_mini_batch: 2
       value_loss_coef: 0.5
-      entropy_coef: 0.0001
-      lr: 2.5e-4
+      entropy_coef: 0.01 # From ETU
+      lr: 3e-4 # From ETU
       eps: 1e-5
       max_grad_norm: 0.2
-      num_steps: 128
+      num_steps: 160 # From ETU
       use_gae: True
       gamma: 0.99
       tau: 0.95

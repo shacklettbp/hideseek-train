@@ -1,10 +1,12 @@
-import madrona_python
+from collections import defaultdict
+
 import gpu_hideseek_python
 import gym.spaces as spaces
+import madrona_python
 import numpy as np
 import torch
+
 from habitat_baselines.common.tensor_dict import TensorDict
-from collections import defaultdict
 
 
 class MadronaVectorEnv:
@@ -21,6 +23,9 @@ class MadronaVectorEnv:
             self._reset = torch.zeros((self._num_envs, 3), device="cuda")
             self._reward = torch.zeros((self._num_envs, 6, 1), device="cuda")
             self._done = torch.zeros((self._num_envs, 1), device="cuda")
+            self._global_pos = torch.zeros(
+                (self._num_envs, 17, 2), device="cuda"
+            )
             self._agent_type = torch.zeros(
                 (self._num_envs, 6, 1), device="cuda"
             )
@@ -78,6 +83,7 @@ class MadronaVectorEnv:
             self._ramp_data = self._sim.ramp_data_tensor().to_torch()
             self._agent_data = self._sim.agent_data_tensor().to_torch()
             self._prep_count = self._sim.prep_counter_tensor().to_torch()
+            self._global_pos = self._sim.global_positions_tensor().to_torch()
 
             # Masks
             self._valid_masks = self._sim.agent_mask_tensor().to_torch()
@@ -87,9 +93,7 @@ class MadronaVectorEnv:
             self._box_vis = self._sim.visible_boxes_mask_tensor().to_torch()
             self._ramp_vis = self._sim.visible_ramps_mask_tensor().to_torch()
 
-        self._start_ramp_pos = None
-        self._start_box_pos = None
-        self._start_agent_pos = None
+        self._start_pos = None
         self._actions_debug = defaultdict(list)
 
         self._obs_shape = tuple(self._get_obs_no_cp().shape)[1:]
@@ -121,11 +125,14 @@ class MadronaVectorEnv:
             )
         ]
 
+    def _get_agent_pos(self):
+        return self._global_pos[:, 11:]
+
     def _get_ramp_pos(self):
-        return self._ramp_data[:, 0, :, :2]
+        return self._global_pos[:, 9:11]
 
     def _get_box_pos(self):
-        return self._box_data[:, 0, :, :2]
+        return self._global_pos[:, :9]
 
     @property
     def orig_action_spaces(self):
@@ -143,7 +150,7 @@ class MadronaVectorEnv:
                 self._prep_count.view(self._num_envs, 1, 1).repeat(
                     1, self._max_num_agents, 1
                 ),
-                self._agent_type,
+                self._agent_type.float(),
             ]
         )
         obs = torch.cat(dat, dim=-1)
@@ -181,17 +188,18 @@ class MadronaVectorEnv:
         self._internal_step()
         self._num_steps = torch.zeros((self._num_envs, 1), device="cuda")
 
-        self._start_box_pos = self._get_box_pos()
-        self._start_ramp_pos = self._get_ramp_pos()
+        self._start_pos = self._global_pos.clone()
+        self._hider_reward = torch.zeros((self._num_envs, 3, 1), device="cuda")
+        self._seeker_reward = torch.zeros(
+            (self._num_envs, 3, 1), device="cuda"
+        )
         return self._get_obs()
 
-    def _update_start_pos(self):
-        is_reset = self._reset[:, 0].view(-1, 1, 1)
-        self._start_box_pos = ((1.0 - is_reset) * self._start_box_pos) + (
-            is_reset * self._get_box_pos()
-        )
-        self._start_ramp_pos = ((1.0 - is_reset) * self._start_ramp_pos) + (
-            is_reset * self._get_ramp_pos()
+    def _update_start_pos(self, done):
+        is_reset = done.view(-1, 1, 1)
+
+        self._start_pos = ((1.0 - is_reset) * self._start_pos) + (
+            is_reset * self._global_pos
         )
 
     def _internal_step(self):
@@ -216,15 +224,13 @@ class MadronaVectorEnv:
         self._reset[:, :1] = self._done
         self._num_steps += 1.0
         self._num_steps *= 1.0 - self._done
+        done_orig = self._done.clone()
         done = (
-            self._done.clone()
-            .view(-1, 1, 1)
-            .repeat(1, self._max_num_agents, 1)
+            done_orig.view(-1, 1)
+            .repeat(1, self._max_num_agents)
             .view(-1, 1)
-            .cpu()
             .bool()
         )
-        self._update_start_pos()
 
         if self._debug_env:
             # Save action sequences if in debug mode.
@@ -233,36 +239,58 @@ class MadronaVectorEnv:
             if done[env_i].item():
                 self._actions_debug[env_i] = []
 
+        pos_diff = self._global_pos - self._start_pos
+
         self._internal_step()
         obs = self._get_obs()
         reward = self._reward.clone()
+        self._update_start_pos(done_orig)
 
-        ramp_dist = torch.linalg.norm(
-            self._get_ramp_pos() - self._start_ramp_pos, dim=-1
-        ).mean(-1)
-        box_dist = torch.linalg.norm(
-            self._get_box_pos() - self._start_box_pos, dim=-1
-        ).mean(-1)
+        self._hider_reward += reward[:, :3]
+        self._seeker_reward += reward[:, 3:]
+        not_done_orig = ~done_orig.view(-1, 1, 1)
+        self._hider_reward *= not_done_orig
+        self._seeker_reward *= not_done_orig
 
-        info = [
+        reward = self._agent_batch(reward)
+        info = {
+            "box_dist": torch.nan_to_num(
+                torch.linalg.norm(pos_diff[:, :9], dim=-1)
+            ),
+            "ramp_dist": torch.nan_to_num(
+                torch.linalg.norm(pos_diff[:, 9:11], dim=-1)
+            ),
+            "agent_dist": torch.nan_to_num(
+                torch.linalg.norm(pos_diff[:, 11:], dim=-1)
+            ),
+            "hider_r": self._hider_reward.view(-1, 3),
+            "seekr_r": self._seeker_reward.view(-1, 3),
+        }
+        info = {
+            k: v.mean(-1, keepdims=True)
+            .repeat(1, self._max_num_agents)
+            .view(-1, 1)
+            for k, v in info.items()
+        }
+        info.update(
             {
-                "r_t": reward[env_i, agent_i].item(),
-                "ns": self._num_steps[env_i].item(),
-                "stage": self._prep_count[env_i].item(),
-                # "ramp_dist": ramp_dist[env_i].item(),
-                # "box_dist": box_dist[env_i].item(),
+                "r_t": reward,
             }
-            for env_i in range(self._num_envs)
-            for agent_i in range(self._max_num_agents)
-        ]
-
-        reward = self._agent_batch(reward).cpu()
+        )
 
         self._last = (obs, reward, done, info)
         return self._last
 
     def render(self):
-        return self._rgb
+        img_shape = list(self._rgb.shape)
+        orig_height = img_shape[2]
+        # Vertical padding
+        img_shape[2] += 10
+        img = torch.zeros(
+            img_shape, dtype=self._rgb.dtype, device=self._rgb.device
+        )
+        img[:, :, :orig_height] = self._rgb
+        return img
 
 
 def construct_envs(
