@@ -69,10 +69,12 @@ class MadronaVectorEnv:
                 max_entities_per_world=3,
                 render_width=64,
                 render_height=64,
+                lidar_render=True,
                 debug_compile=False,
             )
             self._action = self._sim.action_tensor().to_torch()
-            self._rgb = self._sim.rgb_tensor().to_torch()
+            # self._rgb = self._sim.rgb_tensor().to_torch()
+            self._lidar = self._sim.lidar_tensor().to_torch()
             self._reset = self._sim.reset_tensor().to_torch()
             self._reward = self._sim.reward_tensor().to_torch()
             self._done = self._sim.done_tensor().to_torch()
@@ -143,6 +145,7 @@ class MadronaVectorEnv:
             self._agents_vis * self._agent_data,
             self._box_vis * self._box_data,
             self._ramp_vis * self._ramp_data,
+            self._lidar,
         ]
         dat = [x.view(self._num_envs, self._max_num_agents, -1) for x in dat]
         dat.extend(
@@ -253,30 +256,33 @@ class MadronaVectorEnv:
         self._seeker_reward *= not_done_orig
 
         reward = self._agent_batch(reward)
-        info = {
-            "box_dist": torch.nan_to_num(
-                torch.linalg.norm(pos_diff[:, :9], dim=-1)
-            ),
-            "ramp_dist": torch.nan_to_num(
-                torch.linalg.norm(pos_diff[:, 9:11], dim=-1)
-            ),
-            "agent_dist": torch.nan_to_num(
-                torch.linalg.norm(pos_diff[:, 11:], dim=-1)
-            ),
-            "hider_r": self._hider_reward.view(-1, 3),
-            "seekr_r": self._seeker_reward.view(-1, 3),
-        }
-        info = {
-            k: v.mean(-1, keepdims=True)
-            .repeat(1, self._max_num_agents)
-            .view(-1, 1)
-            for k, v in info.items()
-        }
-        info.update(
-            {
-                "r_t": reward,
+        if self._config.habitat_baselines.speed_mode:
+            info = {}
+        else:
+            info = {
+                "box_dist": torch.nan_to_num(
+                    torch.linalg.norm(pos_diff[:, :9], dim=-1)
+                ),
+                "ramp_dist": torch.nan_to_num(
+                    torch.linalg.norm(pos_diff[:, 9:11], dim=-1)
+                ),
+                "agent_dist": torch.nan_to_num(
+                    torch.linalg.norm(pos_diff[:, 11:], dim=-1)
+                ),
+                "hider_r": self._hider_reward.view(-1, 3),
+                "seekr_r": self._seeker_reward.view(-1, 3),
             }
-        )
+            info = {
+                k: v.mean(-1, keepdims=True)
+                .repeat(1, self._max_num_agents)
+                .view(-1, 1)
+                for k, v in info.items()
+            }
+            info.update(
+                {
+                    "r_t": reward,
+                }
+            )
 
         self._last = (obs, reward, done, info)
         return self._last

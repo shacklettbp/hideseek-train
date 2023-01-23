@@ -11,6 +11,13 @@
     * `pip install -e habitat-lab`
     * `pip install -e habitat-baselines`
 
+# Running the Benchmark
+From the `/home/aszot/habitat-lab/habitat-baselines/` directory
+```unix
+MADRONA_MWGPU_KERNEL_CACHE=/home/aszot/madrona_gpu_tmp CUDA_VISIBLE_DEVICES=0 /home/aszot/miniconda3/envs/madrona2/bin/python ../scripts/time_runs.py
+```
+Data is then saved to `data/speeds.csv`
+
 # Repro Physics Bugs
 From `habitat-lab/habitat-baselines/` run 
 ```

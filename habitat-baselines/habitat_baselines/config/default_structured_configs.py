@@ -367,6 +367,7 @@ class HabitatBaselinesConfig(HabitatBaselinesBaseConfig):
     verbose: bool = True
     debug_env: bool = False
     dry_run: bool = False
+    speed_mode: bool = False
     eval_keys_to_include_in_name: List[str] = field(default_factory=list)
     # For our use case, the CPU side things are mainly memory copies
     # and nothing of substantive compute. PyTorch has been making

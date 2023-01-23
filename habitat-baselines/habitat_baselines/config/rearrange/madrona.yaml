@@ -10,6 +10,7 @@ habitat_baselines:
   verbose: False
   dry_run: False
   debug_env: False
+  speed_mode: False
   trainer_name: "ddppo"
   torch_gpu_id: 0
   tensorboard_dir: "tb"
@@ -18,7 +19,10 @@ habitat_baselines:
   load_resume_state_config: False
   test_episode_count: 10
   eval_ckpt_path_dir: "data/new_checkpoints"
-  num_environments: 7800
+  # For RTX 8000
+  num_environments: 10998
+  # For 3090
+  # num_environments: 6000
   writer_type: 'tb'
   checkpoint_folder: "data/new_checkpoints"
   num_updates: -1
