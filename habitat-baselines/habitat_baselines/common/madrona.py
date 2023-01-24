@@ -254,6 +254,7 @@ class MadronaVectorEnv:
         not_done_orig = ~done_orig.view(-1, 1, 1)
         self._hider_reward *= not_done_orig
         self._seeker_reward *= not_done_orig
+        print(self._hider_reward)
 
         reward = self._agent_batch(reward)
         if self._config.habitat_baselines.speed_mode:
