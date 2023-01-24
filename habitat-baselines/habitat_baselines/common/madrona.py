@@ -85,7 +85,10 @@ class MadronaVectorEnv:
             self._ramp_data = self._sim.ramp_data_tensor().to_torch()
             self._agent_data = self._sim.agent_data_tensor().to_torch()
             self._prep_count = self._sim.prep_counter_tensor().to_torch()
-            self._global_pos = self._sim.global_positions_tensor().to_torch()
+            if not self._is_speed:
+                self._global_pos = (
+                    self._sim.global_positions_tensor().to_torch()
+                )
 
             # Masks
             self._valid_masks = self._sim.agent_mask_tensor().to_torch()
@@ -179,7 +182,8 @@ class MadronaVectorEnv:
             breakpoint()
         obs = torch.nan_to_num(obs)
 
-        return TensorDict(hideseek_state=obs.clone())
+        # return TensorDict(hideseek_state=obs.clone())
+        return TensorDict(hideseek_state=obs)  # .clone())
 
     def reset(self):
         # Reset all envs
@@ -191,12 +195,19 @@ class MadronaVectorEnv:
         self._internal_step()
         self._num_steps = torch.zeros((self._num_envs, 1), device="cuda")
 
-        self._start_pos = self._global_pos.clone()
-        self._hider_reward = torch.zeros((self._num_envs, 3, 1), device="cuda")
-        self._seeker_reward = torch.zeros(
-            (self._num_envs, 3, 1), device="cuda"
-        )
+        if not self._is_speed:
+            self._start_pos = self._global_pos.clone()
+            self._hider_reward = torch.zeros(
+                (self._num_envs, 3, 1), device="cuda"
+            )
+            self._seeker_reward = torch.zeros(
+                (self._num_envs, 3, 1), device="cuda"
+            )
         return self._get_obs()
+
+    @property
+    def _is_speed(self):
+        return self._config.habitat_baselines.speed_mode
 
     def _update_start_pos(self, done):
         is_reset = done.view(-1, 1, 1)
@@ -242,19 +253,20 @@ class MadronaVectorEnv:
             if done[env_i].item():
                 self._actions_debug[env_i] = []
 
-        pos_diff = self._global_pos - self._start_pos
+        if not self._is_speed:
+            pos_diff = self._global_pos - self._start_pos
 
         self._internal_step()
         obs = self._get_obs()
-        reward = self._reward.clone()
-        self._update_start_pos(done_orig)
+        reward = self._reward  # .clone()
+        if not self._is_speed:
+            self._update_start_pos(done_orig)
+            self._hider_reward += reward[:, :3]
+            self._seeker_reward += reward[:, 3:]
 
-        self._hider_reward += reward[:, :3]
-        self._seeker_reward += reward[:, 3:]
-        not_done_orig = ~done_orig.view(-1, 1, 1)
-        self._hider_reward *= not_done_orig
-        self._seeker_reward *= not_done_orig
-        print(self._hider_reward)
+            not_done_orig = ~done_orig.view(-1, 1, 1)
+            self._hider_reward *= not_done_orig
+            self._seeker_reward *= not_done_orig
 
         reward = self._agent_batch(reward)
         if self._config.habitat_baselines.speed_mode:
