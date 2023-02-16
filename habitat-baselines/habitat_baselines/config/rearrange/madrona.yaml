@@ -9,6 +9,7 @@ defaults:
 habitat_baselines:
   verbose: False
   dry_run: False
+  cpu_mode: True
   debug_env: False
   speed_mode: False
   trainer_name: "ppo"

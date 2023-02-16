@@ -17,6 +17,13 @@ class MadronaVectorEnv:
         self._num_envs = (
             config.habitat_baselines.num_environments // self._max_num_agents
         )
+        if config.habitat_baselines.cpu_mode:
+            exec_mode = gpu_hideseek_python.ExecMode.CPU
+            self._device = "cpu"
+        else:
+            exec_mode = gpu_hideseek_python.ExecMode.GPU
+            self._device = "cuda"
+
         if config.habitat_baselines.dry_run:
             self._sim = None
             self._action = torch.zeros((self._num_envs, 6, 5), device="cuda")
@@ -62,15 +69,16 @@ class MadronaVectorEnv:
         else:
             print(f"Allocating {self._num_envs} environments")
             self._sim = gpu_hideseek_python.HideAndSeekSimulator(
-                exec_mode=gpu_hideseek_python.ExecMode.CUDA,
+                exec_mode=exec_mode,
                 gpu_id=0,
                 num_worlds=self._num_envs,
                 min_entities_per_world=3,
                 max_entities_per_world=3,
                 render_width=64,
                 render_height=64,
-                lidar_render=True,
+                # lidar_render=True,
                 debug_compile=False,
+                enable_render=False,
             )
             self._action = self._sim.action_tensor().to_torch()
             # self._rgb = self._sim.rgb_tensor().to_torch()
@@ -180,7 +188,7 @@ class MadronaVectorEnv:
             )
             # Access action sequence from `self._actions_debug`.
             breakpoint()
-        obs = torch.nan_to_num(obs)
+        # obs = torch.nan_to_num(obs)
 
         # return TensorDict(hideseek_state=obs.clone())
         return TensorDict(hideseek_state=obs)  # .clone())
@@ -193,15 +201,15 @@ class MadronaVectorEnv:
         # Set the number of seekers
         self._reset[:, 2] = 3
         self._internal_step()
-        self._num_steps = torch.zeros((self._num_envs, 1), device="cuda")
+        self._num_steps = torch.zeros((self._num_envs, 1), device=self._device)
 
         if not self._is_speed:
             self._start_pos = self._global_pos.clone()
             self._hider_reward = torch.zeros(
-                (self._num_envs, 3, 1), device="cuda"
+                (self._num_envs, 3, 1), device=self._device
             )
             self._seeker_reward = torch.zeros(
-                (self._num_envs, 3, 1), device="cuda"
+                (self._num_envs, 3, 1), device=self._device
             )
         return self._get_obs()
 
@@ -212,7 +220,7 @@ class MadronaVectorEnv:
     def _update_start_pos(self, done):
         is_reset = done.view(-1, 1, 1)
 
-        self._start_pos = ((1.0 - is_reset) * self._start_pos) + (
+        self._start_pos = ((~is_reset) * self._start_pos) + (
             is_reset * self._global_pos
         )
 
@@ -233,17 +241,17 @@ class MadronaVectorEnv:
 
         # [0-10] -> [-5, 5] for the agent movement (translation and roation).
         for i in [0, 1, 2]:
-            self._action[:, i] -= 5
+            self._action[..., i] -= 5
+
+        # Mask out the grab action
+        self._action[..., 3] *= 0
 
         self._reset[:, :1] = self._done
         self._num_steps += 1.0
         self._num_steps *= 1.0 - self._done
-        done_orig = self._done.clone()
+        done_orig = self._done.clone().bool()
         done = (
-            done_orig.view(-1, 1)
-            .repeat(1, self._max_num_agents)
-            .view(-1, 1)
-            .bool()
+            done_orig.view(-1, 1).repeat(1, self._max_num_agents).view(-1, 1)
         )
 
         if self._debug_env:
@@ -264,24 +272,26 @@ class MadronaVectorEnv:
             self._hider_reward += reward[:, :3]
             self._seeker_reward += reward[:, 3:]
 
-            not_done_orig = ~done_orig.view(-1, 1, 1)
-            self._hider_reward *= not_done_orig
-            self._seeker_reward *= not_done_orig
+            # self._hider_reward *= not_done_orig
+            # self._seeker_reward *= not_done_orig
 
         reward = self._agent_batch(reward)
         if self._config.habitat_baselines.speed_mode:
             info = {}
         else:
             info = {
-                "box_dist": torch.nan_to_num(
-                    torch.linalg.norm(pos_diff[:, :9], dim=-1)
-                ),
-                "ramp_dist": torch.nan_to_num(
-                    torch.linalg.norm(pos_diff[:, 9:11], dim=-1)
-                ),
-                "agent_dist": torch.nan_to_num(
-                    torch.linalg.norm(pos_diff[:, 11:], dim=-1)
-                ),
+                # "box_dist": torch.nan_to_num(
+                #     torch.linalg.norm(pos_diff[:, :9], dim=-1)
+                # ),
+                # "ramp_dist": torch.nan_to_num(
+                #     torch.linalg.norm(pos_diff[:, 9:11], dim=-1)
+                # ),
+                # "agent_dist": torch.nan_to_num(
+                #     torch.linalg.norm(pos_diff[:, 11:], dim=-1)
+                # ),
+                "box_dist": torch.linalg.norm(pos_diff[:, :9], dim=-1),
+                "ramp_dist": torch.linalg.norm(pos_diff[:, 9:11], dim=-1),
+                "agent_dist": torch.linalg.norm(pos_diff[:, 11:], dim=-1),
                 "hider_r": self._hider_reward.view(-1, 3),
                 "seekr_r": self._seeker_reward.view(-1, 3),
             }
@@ -296,6 +306,9 @@ class MadronaVectorEnv:
                     "r_t": reward,
                 }
             )
+            not_done_orig = ~done_orig.view(-1, 1, 1)
+            self._hider_reward *= not_done_orig
+            self._seeker_reward *= not_done_orig
 
         self._last = (obs, reward, done, info)
         return self._last

@@ -18,7 +18,6 @@ from gym import spaces
 from omegaconf import OmegaConf
 from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
-from habitat_baselines.common.madrona import construct_envs, batch_obs
 
 from habitat import VectorEnv, logger
 from habitat.config import read_write
@@ -31,6 +30,7 @@ from habitat.utils.render_wrapper import overlay_frame
 from habitat.utils.visualizations.utils import observations_to_image
 from habitat_baselines.common.base_trainer import BaseRLTrainer
 from habitat_baselines.common.baseline_registry import baseline_registry
+from habitat_baselines.common.madrona import batch_obs, construct_envs
 
 # from habitat_baselines.common.construct_vector_env import construct_envs
 from habitat_baselines.common.obs_transformers import (
@@ -63,8 +63,7 @@ from habitat_baselines.rl.hrl.hierarchical_policy import (  # noqa: F401.
 )
 from habitat_baselines.rl.ppo import PPO
 from habitat_baselines.rl.ppo.policy import NetPolicy
-from habitat_baselines.utils.common import (
-    # batch_obs,
+from habitat_baselines.utils.common import (  # batch_obs,
     generate_video,
     get_num_actions,
     inference_mode,
@@ -359,10 +358,21 @@ class PPOTrainer(BaseRLTrainer):
 
         self.rollouts.buffers["observations"][0] = batch  # type: ignore
 
-        self.current_episode_reward = torch.zeros(self.envs.num_envs, 1, device='cuda')
+        if self.config.habitat_baselines.cpu_mode:
+            self._stats_device = "cpu"
+        else:
+            self._stats_device = "cuda"
+
+        self.current_episode_reward = torch.zeros(
+            self.envs.num_envs, 1, device=self._stats_device
+        )
         self.running_episode_stats = dict(
-            count=torch.zeros(self.envs.num_envs, 1, device='cuda'),
-            reward=torch.zeros(self.envs.num_envs, 1, device='cuda'),
+            count=torch.zeros(
+                self.envs.num_envs, 1, device=self._stats_device
+            ),
+            reward=torch.zeros(
+                self.envs.num_envs, 1, device=self._stats_device
+            ),
         )
         self.window_episode_stats = defaultdict(
             lambda: deque(maxlen=ppo_cfg.reward_window_size)
@@ -422,7 +432,7 @@ class PPOTrainer(BaseRLTrainer):
     def _extract_scalars_from_info(
         cls, info: Dict[str, Any], env_i: int
     ) -> Dict[str, float]:
-        return {k: v[env_i].item() for k,v in info.items()}
+        return {k: v[env_i].item() for k, v in info.items()}
         # result = {}
         # for k, v in info.items():
         #     if not isinstance(k, str) or k in NON_SCALAR_METRICS:
@@ -450,7 +460,6 @@ class PPOTrainer(BaseRLTrainer):
     def _extract_scalars_from_infos(
         cls, infos: List[Dict[str, Any]]
     ) -> Dict[str, List[float]]:
-
         results = defaultdict(list)
         for i in range(len(infos)):
             for k, v in cls._extract_scalars_from_info(infos[i]).items():
@@ -571,7 +580,8 @@ class PPOTrainer(BaseRLTrainer):
         for k, v in infos.items():
             if k not in self.running_episode_stats:
                 self.running_episode_stats[k] = torch.zeros_like(
-                    self.running_episode_stats["count"], device='cuda'
+                    self.running_episode_stats["count"],
+                    device=self._stats_device,
                 )
             self.running_episode_stats[k][env_slice] += v.where(done_masks, v.new_zeros(()))  # type: ignore
         # for k, v_k in self._extract_scalars_from_infos(infos).items():
@@ -1127,7 +1137,7 @@ class PPOTrainer(BaseRLTrainer):
                         f"agent{agent_i}": frames[0, agent_i] * mult_factor
                         for agent_i in range(6)
                     },
-                    {}
+                    {},
                 )
                 frame = overlay_frame(
                     frame, self._extract_scalars_from_info(infos, 0)
@@ -1154,7 +1164,7 @@ class PPOTrainer(BaseRLTrainer):
                         images=rgb_frames[0],
                         episode_id=ep_count,
                         checkpoint_idx=checkpoint_index,
-                        #metrics=self._extract_scalars_from_info(infos[0]),
+                        # metrics=self._extract_scalars_from_info(infos[0]),
                         metrics={},
                         fps=self.config.habitat_baselines.video_fps,
                         tb_writer=writer,
