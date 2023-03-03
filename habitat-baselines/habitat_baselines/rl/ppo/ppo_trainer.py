@@ -1015,10 +1015,17 @@ class PPOTrainer(BaseRLTrainer):
 
         observations = self.envs.reset()
         batch = batch_obs(observations, device=self.device)
+        batch = {k: v.to(self.device) for k, v in batch.items()}
+
         batch = apply_obs_transforms_batch(batch, self.obs_transforms)  # type: ignore
 
+        if self.config.habitat_baselines.cpu_mode:
+            self._stats_device = "cpu"
+        else:
+            self._stats_device = "cuda"
+
         current_episode_reward = torch.zeros(
-            self.envs.num_envs, 1, device="cuda"
+            self.envs.num_envs, 1, device=self._stats_device
         )
 
         test_recurrent_hidden_states = torch.zeros(
@@ -1120,6 +1127,7 @@ class PPOTrainer(BaseRLTrainer):
                 observations,
                 device=self.device,
             )
+            batch = {k: v.to(self.device) for k,v in observations.items()}
             batch = apply_obs_transforms_batch(batch, self.obs_transforms)  # type: ignore
 
             current_episode_reward += rewards

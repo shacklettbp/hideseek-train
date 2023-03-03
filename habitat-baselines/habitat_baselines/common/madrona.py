@@ -11,6 +11,7 @@ from habitat_baselines.common.tensor_dict import TensorDict
 
 class MadronaVectorEnv:
     def __init__(self, config):
+        enable_render = config['habitat_baselines']['wb']['run_name'].endswith('_eval')
         self._config = config
         self._debug_env = self._config.habitat_baselines.debug_env
         self._max_num_agents = 6
@@ -21,7 +22,7 @@ class MadronaVectorEnv:
             exec_mode = gpu_hideseek_python.ExecMode.CPU
             self._device = "cpu"
         else:
-            exec_mode = gpu_hideseek_python.ExecMode.GPU
+            exec_mode = gpu_hideseek_python.ExecMode.CUDA
             self._device = "cuda"
 
         if config.habitat_baselines.dry_run:
@@ -78,10 +79,11 @@ class MadronaVectorEnv:
                 render_height=64,
                 # lidar_render=True,
                 debug_compile=False,
-                enable_render=False,
+                enable_render=enable_render,
             )
             self._action = self._sim.action_tensor().to_torch()
-            # self._rgb = self._sim.rgb_tensor().to_torch()
+            if enable_render:
+                self._rgb = self._sim.rgb_tensor().to_torch()
             self._lidar = self._sim.lidar_tensor().to_torch()
             self._reset = self._sim.reset_tensor().to_torch()
             self._reward = self._sim.reward_tensor().to_torch()
